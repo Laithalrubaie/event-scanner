@@ -26,6 +26,14 @@ CREDENTIALS_FILE = "credentials.json"
 st.set_page_config(page_title="Event Scanner", page_icon="📷")
 st.title("📷 Live Event Scanner")
 
+# --- 0. GLOBAL MEMORY (The Fix for Freezing) ---
+# We use a standard set instead of session_state for the camera thread
+if 'phone_cache' not in st.session_state:
+    st.session_state.phone_cache = set()
+
+# Helper to sync global memory
+PHONE_CACHE = st.session_state.phone_cache
+
 # --- 1. CONNECTION SETUP ---
 @st.cache_resource
 def init_services():
@@ -63,34 +71,29 @@ def init_services():
 
 sheet, twilio_client = init_services()
 
-# --- 2. LOAD DATABASE (The New Logic) ---
-if 'db_numbers' not in st.session_state:
-    st.session_state.db_numbers = set()
-
+# --- 2. LOAD DATABASE ---
 def load_existing_db():
-    """Fetch all phone numbers from the Sheet (Column 2) so we don't scan them twice."""
     if sheet:
         try:
-            # Get all values from Column 2 (Phone Number)
-            # We assume Row 1 is the Header, so we skip it
+            # Get all values from Column 2
             phone_column = sheet.col_values(2)[1:] 
-            
-            # Clean the numbers (remove spaces, symbols) just to be safe
             clean_set = set()
             for p in phone_column:
-                clean_num = re.sub(r'\D', '', str(p)) # Keep only digits
+                clean_num = re.sub(r'\D', '', str(p))
                 if clean_num:
                     clean_set.add(clean_num)
             
-            st.session_state.db_numbers = clean_set
-            st.toast(f"📚 Database Loaded: {len(clean_set)} guests found.")
-        except Exception as e:
-            st.error(f"Failed to load DB: {e}")
+            # Update both memories
+            st.session_state.phone_cache = clean_set
+            global PHONE_CACHE
+            PHONE_CACHE = clean_set
+            
+            st.toast(f"📚 Database Loaded: {len(clean_set)} guests.")
+        except: pass
 
-# Load DB once on startup
-if not st.session_state.db_numbers:
+# Load once
+if not st.session_state.phone_cache:
     load_existing_db()
-
 # --- 3. NETWORK BOOSTER (THE MEGA LIST) ---
 @st.cache_data(ttl=3600)
 def get_ice_servers():
@@ -121,7 +124,8 @@ def get_ice_servers():
         {"urls": ["stun:stun.voipbuster.com"]},
         {"urls": ["stun:stun.voipstunt.com"]},
     ]
-# --- 4. SCANNER LOGIC (With DB Check) ---
+
+# --- 4. SCANNER LOGIC ---
 result_queue = queue.Queue()
 
 class QRProcessor(VideoProcessorBase):
@@ -139,26 +143,20 @@ class QRProcessor(VideoProcessorBase):
             if points is not None:
                 pts = np.array(points, np.int32).reshape((-1, 1, 2))
                 
-                # EXTRACT PHONE NUMBER from QR Data
-                # Assuming QR format is "Name, Phone" or similar
+                # Check Global Variable (Thread Safe!)
                 raw_phone = re.sub(r'\D', '', data) 
                 
-                # LOGIC: Check against the downloaded Sheet Database
-                if raw_phone in st.session_state.db_numbers:
-                    # OLD GUEST (Red)
+                # Use the global PHONE_CACHE, not session_state
+                if raw_phone in PHONE_CACHE:
                     message = "ALREADY REGISTERED"
                     color = (0, 0, 255) # Red
                     cv2.polylines(img, [pts], True, color, 4)
                 else:
-                    # NEW GUEST (Green)
                     message = "NEW GUEST!"
                     color = (0, 255, 0) # Green
                     cv2.polylines(img, [pts], True, color, 4)
-                    
-                    # Send to Main Loop to be saved
                     result_queue.put(data)
 
-            # Draw Message
             cv2.putText(img, message, (50, 80), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 4)
 
@@ -167,7 +165,6 @@ class QRProcessor(VideoProcessorBase):
 # --- 5. UI & COMPONENT ---
 if sheet: st.toast("✅ Google Ready")
 
-# Camera Setup
 ice_servers = get_ice_servers()
 rtc_config = RTCConfiguration({"iceServers": ice_servers})
 
@@ -193,47 +190,44 @@ webrtc_ctx = webrtc_streamer(
 # --- 6. PROCESS & SAVE ---
 if webrtc_ctx.state.playing:
     try:
-        # Get data from scanner
         scanned_data = result_queue.get(timeout=0.1)
-        
         if scanned_data:
-            # 1. Parse Data
             raw_text = scanned_data
             phone = re.sub(r'\D', '', raw_text)
             name = re.sub(r'[0-9,.-]', '', raw_text).strip()
             if not name: name = "Unknown"
 
-            # 2. DOUBLE CHECK: Is it really new? (Avoid race conditions)
-            if phone in st.session_state.db_numbers:
-                pass # Ignore, just processed
+            # Double check against global cache
+            if phone in PHONE_CACHE:
+                pass 
             else:
-                st.success(f"Processing New Guest: {name}")
+                st.success(f"Processing: {name}")
                 
-                # 3. Add to Local Database IMMEDIATELY (so camera turns Red)
-                st.session_state.db_numbers.add(phone)
+                # Add to Global Cache IMMEDIATELY
+                PHONE_CACHE.add(phone)
+                st.session_state.phone_cache.add(phone) # Sync backup
 
-                # 4. Format Phone for WhatsApp
+                # Prepare Phone
                 wa_phone = phone
                 if len(wa_phone) <= 11:
                     if wa_phone.startswith("0"): wa_phone = "+964" + wa_phone[1:]
                     else: wa_phone = "+964" + wa_phone
                 else: wa_phone = "+" + wa_phone
 
-                # 5. Save to Google Sheet
+                # Save
                 if sheet:
                     try:
                         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         sheet.append_row([name, phone, timestamp, "ARRIVED"])
-                        st.toast(f"✅ Saved to Sheet: {name}")
-                    except Exception as e:
-                        st.error(f"Sheet Error: {e}")
+                        st.toast(f"✅ Saved: {name}")
+                    except: st.error("Sheet Error")
 
-                # 6. Send WhatsApp
+                # WhatsApp
                 if twilio_client:
                     try:
                         msg = f"Welcome {name}! You are successfully checked in."
                         twilio_client.messages.create(body=msg, from_=TWILIO_FROM, to=f"whatsapp:{wa_phone}")
-                        st.toast(f"📨 WhatsApp Sent!")
+                        st.toast(f"📨 Sent!")
                     except: pass
 
     except queue.Empty:
