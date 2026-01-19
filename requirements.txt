@@ -5,5 +5,5 @@ numpy
 av
 twilio
 gspread
-oauth2client
+google-auth
 pillow
