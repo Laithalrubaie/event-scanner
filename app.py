@@ -185,3 +185,84 @@ if webrtc_ctx.state.playing:
                 
         except queue.Empty:
             time.sleep(0.1)
+
+# --- 6. DEBUG PROCESSING LOOP ---
+if webrtc_ctx.state.playing:
+    message_box = st.empty()
+    debug_box = st.empty() # New box for error logs
+    
+    while True:
+        if not webrtc_ctx.state.playing:
+            break
+            
+        try:
+            scanned_data = result_queue.get(timeout=0.1)
+            
+            if scanned_data:
+                # STEP 1: Acknowledge Scan
+                message_box.info(f"⚡ Found QR: {scanned_data}")
+                debug_box.write("Log: Starting process...")
+                
+                # STEP 2: Check Connections
+                if sheet is None:
+                    debug_box.error("❌ ERROR: Google Sheet is NOT connected. check init_services()")
+                else:
+                    debug_box.success("✅ Google Sheet is connected.")
+
+                if twilio_client is None:
+                    debug_box.error("❌ ERROR: Twilio is NOT connected. check tokens.")
+                else:
+                    debug_box.success("✅ Twilio is connected.")
+
+                # STEP 3: Parse Data
+                raw_text = scanned_data
+                # Extract numbers only
+                phone_numeric = re.sub(r'\D', '', raw_text) 
+                # Extract text only
+                name = re.sub(r'[0-9,.-]', '', raw_text).strip()
+                if not name: name = "Unknown"
+                
+                debug_box.write(f"Log: Parsed Name: {name}, Phone: {phone_numeric}")
+
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                # STEP 4: Save to Sheet
+                if sheet:
+                    try:
+                        debug_box.write("Log: Attempting to save to sheet...")
+                        sheet.append_row([name, phone_numeric, timestamp, "ARRIVED"])
+                        debug_box.write("Log: Saved to sheet successfully.")
+                    except Exception as e:
+                        debug_box.error(f"❌ CRITICAL SHEET ERROR: {e}")
+
+                # STEP 5: Send WhatsApp
+                if twilio_client:
+                    try:
+                        debug_box.write("Log: Attempting to send WhatsApp...")
+                        
+                        # ⚠️ TWILIO REQUIRES COUNTRY CODE
+                        # If your QR doesn't have it, hardcode it here (e.g., '1' for USA, '91' for India)
+                        if not phone_numeric.startswith("1"): 
+                             # Example: Force add +1 if missing. CHANGE THIS to your country code!
+                             final_phone = f"whatsapp:+1{phone_numeric}"
+                        else:
+                             final_phone = f"whatsapp:+{phone_numeric}"
+
+                        debug_box.write(f"Log: Sending to {final_phone}...")
+
+                        message = twilio_client.messages.create(
+                            body=f"Hello {name}, Welcome! 📷",
+                            from_=TWILIO_FROM,
+                            to=final_phone
+                        )
+                        debug_box.write(f"Log: Message Sent! SID: {message.sid}")
+                        
+                    except Exception as e:
+                        # This is usually where it fails
+                        debug_box.error(f"❌ CRITICAL TWILIO ERROR: {e}")
+
+                st.balloons()
+                time.sleep(5) # Pause to read errors
+                
+        except queue.Empty:
+            time.sleep(0.1)
