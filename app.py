@@ -1,5 +1,6 @@
 import streamlit as st
-# --- 🛠️ MONKEY PATCH FIX (Must be at the top) ---
+
+# --- 🛠️ MONKEY PATCH FIX (Crucial for Mobile) ---
 if not hasattr(st, "experimental_rerun"):
     st.experimental_rerun = st.rerun
 # ------------------------------------------------
@@ -21,6 +22,7 @@ from google.oauth2.service_account import Credentials
 from datetime import datetime
 
 # --- CONFIGURATION ---
+# (Ideally keep these in st.secrets for production)
 TWILIO_SID = 'AC14911ac5ee7380049fc38986c318f829'
 TWILIO_TOKEN = 'ba415a1d96f3140cd7dea2b22623ab75'
 TWILIO_FROM = 'whatsapp:+14155238886'
@@ -34,21 +36,13 @@ st.title("📷 Live Event Scanner")
 # --- HYBRID CONNECTION SETUP ---
 @st.cache_resource
 def init_services():
-    """
-    Establish connections. 
-    Strictly NO UI code (st.write, st.error) allowed here.
-    """
     sheet_obj = None
     twilio_obj = None
 
     # 1. CONNECT GOOGLE SHEETS
     try:
-        scope = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
+        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = None
-        
         if os.path.exists(CREDENTIALS_FILE):
             creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scope)
         elif "GOOGLE_CREDENTIALS_BASE64" in st.secrets:
@@ -57,41 +51,49 @@ def init_services():
                 json_str = base64.b64decode(b64_str).decode("utf-8")
                 key_dict = json.loads(json_str)
                 creds = Credentials.from_service_account_info(key_dict, scopes=scope)
-            except Exception as e:
-                print(f"Base64 Error: {e}")
-            
+            except: pass
         if creds:
             g_client = gspread.authorize(creds)
             sheet_obj = g_client.open(SHEET_NAME).sheet1
-            
     except Exception as e:
-        print(f"Google Sheet Error: {e}") 
+        print(f"Google Error: {e}")
 
     # 2. CONNECT TWILIO
     try:
         sid = st.secrets.get("TWILIO_SID", TWILIO_SID)
         token = st.secrets.get("TWILIO_TOKEN", TWILIO_TOKEN)
-        
         if sid and token:
             twilio_obj = Client(sid, token)
-            
     except Exception as e:
         print(f"Twilio Error: {e}")
     
     return sheet_obj, twilio_obj
 
-# --- MAIN EXECUTION ---
 sheet, twilio_client = init_services()
 
-if sheet:
-    st.toast("✅ Google Connected")
-else:
-    st.error("❌ Google Connection Failed.")
+# --- 🌐 NETWORK BOOSTER (The Fix) ---
+@st.cache_data(ttl=3600) # Cache this for 1 hour to save API calls
+def get_ice_servers():
+    """
+    Ask Twilio for the best Relay Servers (TURN) for this specific location.
+    This punches through firewalls in Iraq/Mobile Networks.
+    """
+    try:
+        # Use the Twilio Client we already created
+        if twilio_client:
+            token = twilio_client.tokens.create()
+            return token.ice_servers
+    except Exception as e:
+        print(f"Twilio TURN Error: {e}")
+    
+    # Fallback to Google's free servers if Twilio fails
+    return [{"urls": ["stun:stun.l.google.com:19302"]}]
 
-if twilio_client:
-    st.toast("✅ Twilio Connected")
+# --- UI STATUS ---
+if sheet: st.toast("✅ Google Connected")
+if twilio_client: st.toast("✅ Twilio Connected")
 
-# --- THE SCANNER LOGIC ---
+# --- SCANNER LOGIC ---
 result_queue = queue.Queue()
 
 class QRProcessor(VideoTransformerBase):
@@ -110,67 +112,67 @@ class QRProcessor(VideoTransformerBase):
                 cv2.polylines(img, [pts], True, (0, 255, 0), 4)
             
             current_time = time.time()
-            # COOLDOWN: Change 10 to 2 if you want to scan faster during testing
-            if data not in self.scanned_codes or (current_time - self.last_scan_time > 10):
+            if data not in self.scanned_codes or (current_time - self.last_scan_time > 5):
                 self.scanned_codes.add(data)
                 self.last_scan_time = current_time
                 result_queue.put(data)
                 cv2.putText(img, "SCANNED!", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
             else:
-                 cv2.putText(img, "Already Scanned", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                 cv2.putText(img, "Wait...", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- UI & WEBRTC ---
-# 1. Setup the Network Helpers (STUN servers)
-rtc_configuration = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-)
+# --- WEBRTC COMPONENT ---
+# 1. Get the Powerful Network Config
+ice_servers = get_ice_servers()
+rtc_configuration = RTCConfiguration({"iceServers": ice_servers})
 
-# 2. Open the Camera (Universal Mode)
-# We removed "facingMode: environment" so it works on Laptops too.
+# 2. Render Camera
 webrtc_ctx = webrtc_streamer(
     key="scanner",
     video_transformer_factory=QRProcessor,
-    rtc_configuration=rtc_configuration,
+    rtc_configuration=rtc_configuration, # <--- Using Twilio TURN servers now
     media_stream_constraints={
-        "video": True, # Just ask for ANY video
-        "audio": False # We don't need audio
+        "video": True,
+        "audio": False
     },
+    async_processing=True,
 )
 
-# --- PROCESS RESULTS ---
+# --- PROCESS RESULT ---
 if webrtc_ctx.state.playing:
     try:
         scanned_data = result_queue.get(timeout=0.1)
         if scanned_data:
             st.success(f"Processing: {scanned_data}")
             
+            # PARSE
             raw_text = scanned_data
             phone = re.sub(r'\D', '', raw_text)
             name = re.sub(r'[0-9,.-]', '', raw_text).strip()
-            if not name: name = "Unknown Guest"
+            if not name: name = "Unknown"
             
+            # FORMAT
             if len(phone) <= 11:
                 if phone.startswith("0"): phone = "+964" + phone[1:]
                 else: phone = "+964" + phone
             else: phone = "+" + phone
 
+            # SAVE
             if sheet:
                 try:
                     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     sheet.append_row([name, phone, timestamp, "ARRIVED"])
                     st.toast(f"✅ Saved: {name}")
-                except Exception as e:
-                    st.error(f"Sheet Error: {e}")
+                except: st.error("Sheet Error")
 
+            # SEND
             if twilio_client:
                 try:
                     msg = f"Welcome {name}! You are checked in."
                     twilio_client.messages.create(body=msg, from_=TWILIO_FROM, to=f"whatsapp:{phone}")
-                    st.toast(f"📨 WhatsApp Sent!")
-                except Exception as e:
-                    st.warning(f"Twilio Error: {e}")
+                    st.toast(f"📨 Sent!")
+                except: st.warning("Twilio Error")
 
     except queue.Empty:
         pass
