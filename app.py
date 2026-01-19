@@ -91,15 +91,36 @@ def load_existing_db():
 if not st.session_state.db_numbers:
     load_existing_db()
 
-# --- 3. NETWORK BOOSTER ---
+# --- 3. NETWORK BOOSTER (THE MEGA LIST) ---
 @st.cache_data(ttl=3600)
 def get_ice_servers():
+    """
+    If real Twilio keys are missing, we use a MASSIVE list of free public STUN servers.
+    This increases the chance of punching through the 4G firewall.
+    """
+    # 1. Try Real Twilio (If you ever buy real keys)
     try:
         if twilio_client:
-            return twilio_client.tokens.create().ice_servers
+            token = twilio_client.tokens.create()
+            return token.ice_servers
     except: pass
-    return [{"urls": ["stun:stun.l.google.com:19302"]}]
-
+    
+    # 2. THE MEGA LIST (Free Public Servers)
+    return [
+        {"urls": ["stun:stun.l.google.com:19302"]},
+        {"urls": ["stun:stun1.l.google.com:19302"]},
+        {"urls": ["stun:stun2.l.google.com:19302"]},
+        {"urls": ["stun:stun3.l.google.com:19302"]},
+        {"urls": ["stun:stun4.l.google.com:19302"]},
+        {"urls": ["stun:stun.global.calls.net:3478"]},
+        {"urls": ["stun:stun.ideasip.com"]},
+        {"urls": ["stun:stun.voip.blackberry.com:3478"]},
+        {"urls": ["stun:stun.server.com:3478"]},
+        {"urls": ["stun:stun.schlund.de"]},
+        {"urls": ["stun:stun.voiparound.com:3478"]},
+        {"urls": ["stun:stun.voipbuster.com"]},
+        {"urls": ["stun:stun.voipstunt.com"]},
+    ]
 # --- 4. SCANNER LOGIC (With DB Check) ---
 result_queue = queue.Queue()
 
