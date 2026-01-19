@@ -26,8 +26,7 @@ CREDENTIALS_FILE = "credentials.json"
 st.set_page_config(page_title="Event Scanner", page_icon="📷")
 st.title("📷 Live Event Scanner")
 
-# --- 0. GLOBAL MEMORY (The Fix for Freezing) ---
-# We use a standard set instead of session_state for the camera thread
+# --- 0. GLOBAL MEMORY ---
 if 'phone_cache' not in st.session_state:
     st.session_state.phone_cache = set()
 
@@ -52,10 +51,13 @@ def init_services():
                 json_str = base64.b64decode(b64_str).decode("utf-8")
                 key_dict = json.loads(json_str)
                 creds = Credentials.from_service_account_info(key_dict, scopes=scope)
-            except: pass
+            except Exception as e:
+                print(f"Base64 Error: {e}")
+        
         if creds:
             g_client = gspread.authorize(creds)
             sheet_obj = g_client.open(SHEET_NAME).sheet1
+            
     except Exception as e:
         print(f"Google Error: {e}")
 
@@ -70,6 +72,16 @@ def init_services():
     return sheet_obj, twilio_obj
 
 sheet, twilio_client = init_services()
+
+# --- ⚠️ CONNECTION DEBUGGER ⚠️ ---
+if sheet is None:
+    st.error("🚨 CRITICAL ERROR: Google Sheet is NOT connected.")
+    st.info("Check: 1. credentials.json exists? 2. Did you share the sheet with the client_email?")
+else:
+    st.success("✅ Google Sheet Connected & Ready")
+
+if twilio_client is None:
+    st.warning("⚠️ Twilio is OFF (Fake keys or missing). WhatsApp will not send.")
 
 # --- 2. LOAD DATABASE ---
 def load_existing_db():
@@ -89,11 +101,13 @@ def load_existing_db():
             PHONE_CACHE = clean_set
             
             st.toast(f"📚 Database Loaded: {len(clean_set)} guests.")
-        except: pass
+        except Exception as e:
+            st.error(f"Database Load Error: {e}")
 
 # Load once
 if not st.session_state.phone_cache:
     load_existing_db()
+
 # --- 3. NETWORK BOOSTER (THE MEGA LIST) ---
 @st.cache_data(ttl=3600)
 def get_ice_servers():
@@ -146,7 +160,7 @@ class QRProcessor(VideoProcessorBase):
                 # Check Global Variable (Thread Safe!)
                 raw_phone = re.sub(r'\D', '', data) 
                 
-                # Use the global PHONE_CACHE, not session_state
+                # Use the global PHONE_CACHE
                 if raw_phone in PHONE_CACHE:
                     message = "ALREADY REGISTERED"
                     color = (0, 0, 255) # Red
@@ -155,6 +169,7 @@ class QRProcessor(VideoProcessorBase):
                     message = "NEW GUEST!"
                     color = (0, 255, 0) # Green
                     cv2.polylines(img, [pts], True, color, 4)
+                    # Put in queue to save
                     result_queue.put(data)
 
             cv2.putText(img, message, (50, 80), 
@@ -163,8 +178,6 @@ class QRProcessor(VideoProcessorBase):
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # --- 5. UI & COMPONENT ---
-if sheet: st.toast("✅ Google Ready")
-
 ice_servers = get_ice_servers()
 rtc_config = RTCConfiguration({"iceServers": ice_servers})
 
@@ -187,48 +200,56 @@ webrtc_ctx = webrtc_streamer(
     async_processing=True,
 )
 
-# --- 6. PROCESS & SAVE ---
+# --- 6. PROCESS & SAVE (DEBUG MODE) ---
 if webrtc_ctx.state.playing:
     try:
         scanned_data = result_queue.get(timeout=0.1)
         if scanned_data:
+            # 1. Show raw data (Debug)
+            st.info(f"⚡ Received Data: {scanned_data}")
+            
             raw_text = scanned_data
             phone = re.sub(r'\D', '', raw_text)
             name = re.sub(r'[0-9,.-]', '', raw_text).strip()
             if not name: name = "Unknown"
 
-            # Double check against global cache
+            # 2. DOUBLE CHECK against cache
             if phone in PHONE_CACHE:
-                pass 
+                st.warning(f"Skipping {name}: Already in cache.")
             else:
-                st.success(f"Processing: {name}")
+                st.success(f"Saving New Guest: {name}...")
                 
-                # Add to Global Cache IMMEDIATELY
+                # 3. Save to Cache FIRST
                 PHONE_CACHE.add(phone)
-                st.session_state.phone_cache.add(phone) # Sync backup
+                st.session_state.phone_cache.add(phone)
 
-                # Prepare Phone
-                wa_phone = phone
-                if len(wa_phone) <= 11:
-                    if wa_phone.startswith("0"): wa_phone = "+964" + wa_phone[1:]
-                    else: wa_phone = "+964" + wa_phone
-                else: wa_phone = "+" + wa_phone
-
-                # Save
+                # 4. Save to Sheet
                 if sheet:
                     try:
                         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         sheet.append_row([name, phone, timestamp, "ARRIVED"])
-                        st.toast(f"✅ Saved: {name}")
-                    except: st.error("Sheet Error")
+                        st.balloons() # Visual Success
+                        st.toast(f"✅ Saved to Sheet: {name}")
+                    except Exception as e:
+                        # ⚠️ SHOW THE ERROR
+                        st.error(f"❌ SHEET WRITE FAILED: {e}")
+                else:
+                    st.error("❌ Sheet is None (Not Connected)")
 
-                # WhatsApp
+                # 5. WhatsApp
                 if twilio_client:
                     try:
+                        wa_phone = phone
+                        if len(wa_phone) <= 11:
+                            if wa_phone.startswith("0"): wa_phone = "+964" + wa_phone[1:]
+                            else: wa_phone = "+964" + wa_phone
+                        else: wa_phone = "+" + wa_phone
+                        
                         msg = f"Welcome {name}! You are successfully checked in."
                         twilio_client.messages.create(body=msg, from_=TWILIO_FROM, to=f"whatsapp:{wa_phone}")
                         st.toast(f"📨 Sent!")
-                    except: pass
+                    except Exception as e:
+                        st.warning(f"Twilio Error: {e}")
 
     except queue.Empty:
         pass
