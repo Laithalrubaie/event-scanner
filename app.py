@@ -26,6 +26,26 @@ CREDENTIALS_FILE = "credentials.json"
 st.set_page_config(page_title="Event Scanner", page_icon="📷")
 st.title("📷 Live Scanner: Fixed Version")
 
+
+def reset_database(sheet_obj):
+    if sheet_obj:
+        try:
+            # Option A: Fast clear (Clears content, keeps rows)
+            # Assuming your data goes up to column E. Adjust "Z" if you have more columns.
+            sheet_obj.batch_clear(["A2:Z"]) 
+            
+            # Option B: Delete rows (Slower but cleaner if you have thousands of rows)
+            # if sheet_obj.row_count > 1:
+            #     sheet_obj.delete_rows(2, sheet_obj.row_count)
+            #     sheet_obj.resize(rows=100) # Add empty rows back
+            
+            return True
+        except Exception as e:
+            st.error(f"Error resetting DB: {e}")
+            return False
+    return False
+
+
 # --- 1. CONNECT SERVICES ---
 @st.cache_resource
 def init_services():
@@ -106,6 +126,26 @@ class QRProcessor(VideoProcessorBase):
 # --- 4. UI SETUP ---
 rtc_config = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
 
+# --- ADMIN CONTROLS (Sidebar) ---
+with st.sidebar:
+    st.header("⚙️ Admin Panel")
+    
+    # Simple password protection to prevent accidental resets
+    admin_pass = st.text_input("Admin Password", type="password")
+    
+    if st.button("🗑️ RESET DATABASE"):
+        if admin_pass == "1234":  # <--- SET YOUR PASSWORD HERE
+            if sheet:
+                success = reset_database(sheet)
+                if success:
+                    st.success("✅ Database Wiped Successfully!")
+                    time.sleep(2)
+                    st.rerun() # Refreshes the app
+            else:
+                st.error("Sheet not connected!")
+        else:
+            st.error("❌ Wrong Password!")
+            
 webrtc_ctx = webrtc_streamer(
     key="scanner",
     video_processor_factory=QRProcessor,
