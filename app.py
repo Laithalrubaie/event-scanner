@@ -8,34 +8,25 @@ import time
 import re
 import os
 import queue
+import json
+import base64 # Added this
 from twilio.rest import Client
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 
-# ==========================================
-# ⚙️ CONFIGURATION
-# ==========================================
-# These are fallback keys for testing on your laptop. 
-# For the Cloud, we will use the "Secrets" menu instead.
-DEFAULT_TWILIO_SID = 'YOUR_TWILIO_SID_HERE'
-DEFAULT_TWILIO_TOKEN = 'YOUR_TWILIO_TOKEN_HERE'
+# --- CONFIGURATION ---
+DEFAULT_TWILIO_SID = 'YOUR_TWILIO_SID'
+DEFAULT_TWILIO_TOKEN = 'YOUR_TWILIO_TOKEN'
 TWILIO_FROM = 'whatsapp:+14155238886'
 
 SHEET_NAME = "Teachers Attendance"
 CREDENTIALS_FILE = "credentials.json"
 
-# ==========================================
-# 🚀 PAGE SETUP
-# ==========================================
 st.set_page_config(page_title="Event Scanner", page_icon="📷")
 st.title("📷 Live Event Scanner")
 
-# ==========================================
-# 🔌 CONNECTION SETUP (Hybrid: Local + Cloud)
-# ==========================================
-# --- HYBRID CONNECTION SETUP ---
-# --- HYBRID CONNECTION SETUP ---
+# --- HYBRID CONNECTION SETUP (Base64 Edition) ---
 @st.cache_resource
 def setup_connections():
     sheet = None
@@ -44,29 +35,27 @@ def setup_connections():
     # 1. CONNECT GOOGLE SHEETS
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = None
         
         # Strategy A: Check for local file (Laptop)
         if os.path.exists(CREDENTIALS_FILE):
             creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
         
-        # Strategy B: Check for Cloud Secrets (Streamlit Cloud)
-        elif "gcp_service_account" in st.secrets:
-            # تحويل البيانات إلى قاموس قابل للتعديل
-            creds_dict = dict(st.secrets["gcp_service_account"])
-            
-            # --- التصحيح القوي للمفتاح ---
-            # نتأكد من وجود المفتاح أولاً
-            if "private_key" in creds_dict:
-                private_key = creds_dict["private_key"]
-                # 1. إذا كان المفتاح يحتوي على \\n (نصي)، نحوله إلى \n (حقيقي)
-                # 2. نمسح أي علامات تنصيص زائدة قد تكون نسخت بالخطأ
-                private_key = private_key.replace("\\n", "\n").strip('"')
-                creds_dict["private_key"] = private_key
-
-            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        # Strategy B: Check for Base64 Secret (Streamlit Cloud - The Robust Way)
+        elif "GOOGLE_CREDENTIALS_BASE64" in st.secrets:
+            try:
+                # Decode the Base64 string back into JSON
+                b64_str = st.secrets["GOOGLE_CREDENTIALS_BASE64"]
+                json_str = base64.b64decode(b64_str).decode("utf-8")
+                key_dict = json.loads(json_str)
+                
+                creds = ServiceAccountCredentials.from_json_keyfile_dict(key_dict, scope)
+            except Exception as e:
+                st.error(f"❌ Failed to decode Base64 credentials: {e}")
+                return None, None
             
         else:
-            st.error("❌ Key File Missing! Put 'credentials.json' in the folder OR set up Secrets.")
+            st.error("❌ Key File Missing! Put 'credentials.json' locally OR set 'GOOGLE_CREDENTIALS_BASE64' in Secrets.")
             return None, None
 
         g_client = gspread.authorize(creds)
@@ -74,13 +63,11 @@ def setup_connections():
         st.toast("✅ Google Connected")
         
     except Exception as e:
-        # مسح الكاش لإجبار التطبيق على المحاولة مرة أخرى عند التحديث
-        st.cache_resource.clear()
+        st.cache_resource.clear() # Clear cache on error
         st.error(f"❌ Google Connection Error: {e}")
 
     # 2. CONNECT TWILIO
     try:
-        # Check Secrets first, then fallback to defaults
         if "TWILIO_SID" in st.secrets:
             sid = st.secrets["TWILIO_SID"]
             token = st.secrets["TWILIO_TOKEN"]
@@ -98,10 +85,7 @@ def setup_connections():
 # Initialize Connections
 sheet, twilio_client = setup_connections()
 
-# ==========================================
-# 🧠 THE SCANNER LOGIC (The Brain)
-# ==========================================
-# This queue allows the video thread to send data to the main website
+# --- THE SCANNER LOGIC ---
 result_queue = queue.Queue()
 
 class QRProcessor(VideoTransformerBase):
@@ -113,35 +97,25 @@ class QRProcessor(VideoTransformerBase):
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
         
-        # Detect QR Code
         data, points, _ = self.qr_detector.detectAndDecode(img)
         
         if data:
-            # Draw Green Box
             if points is not None:
                 pts = np.array(points, np.int32).reshape((-1, 1, 2))
                 cv2.polylines(img, [pts], True, (0, 255, 0), 4)
             
-            # Spam Prevention Logic (Wait 10 seconds before scanning same code)
             current_time = time.time()
             if data not in self.scanned_codes or (current_time - self.last_scan_time > 10):
                 self.scanned_codes.add(data)
                 self.last_scan_time = current_time
-                
-                # Send the result to the main app
                 result_queue.put(data)
-                
-                # Draw "SCANNED!" text on video
                 cv2.putText(img, "SCANNED!", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
             else:
                  cv2.putText(img, "Already Scanned", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# ==========================================
-# 📱 THE CAMERA UI
-# ==========================================
-# STUN servers help mobile phones connect over 4G/Data
+# --- UI & WEBRTC ---
 rtc_configuration = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
@@ -150,36 +124,29 @@ webrtc_ctx = webrtc_streamer(
     key="scanner",
     video_transformer_factory=QRProcessor,
     rtc_configuration=rtc_configuration,
-    media_stream_constraints={"video": {"facingMode": "environment"}}, # Use Back Camera
+    media_stream_constraints={"video": {"facingMode": "environment"}},
 )
 
-# ==========================================
-# 📝 RESULT PROCESSING
-# ==========================================
+# --- PROCESS RESULTS ---
 if webrtc_ctx.state.playing:
     try:
-        # Check if the video thread sent us any data
         scanned_data = result_queue.get(timeout=0.1)
         
         if scanned_data:
             st.success(f"Processing: {scanned_data}")
             
-            # --- 1. CLEAN DATA ---
+            # Logic
             raw_text = scanned_data
-            phone = re.sub(r'\D', '', raw_text) # Extract only numbers
-            name = re.sub(r'[0-9,.-]', '', raw_text).strip() # Extract only letters
-            
-            # Handle empty names (bad scan)
+            phone = re.sub(r'\D', '', raw_text)
+            name = re.sub(r'[0-9,.-]', '', raw_text).strip()
             if not name: name = "Unknown Guest"
             
-            # --- 2. FIX PHONE NUMBER (+964) ---
             if len(phone) <= 11:
                 if phone.startswith("0"): phone = "+964" + phone[1:]
                 else: phone = "+964" + phone
-            else:
-                phone = "+" + phone
+            else: phone = "+" + phone
 
-            # --- 3. SAVE TO GOOGLE SHEET ---
+            # Sheet
             if sheet:
                 try:
                     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -188,7 +155,7 @@ if webrtc_ctx.state.playing:
                 except Exception as e:
                     st.error(f"Sheet Error: {e}")
 
-            # --- 4. SEND WHATSAPP ---
+            # WhatsApp
             if twilio_client:
                 try:
                     msg = f"Welcome {name}! You are checked in."
