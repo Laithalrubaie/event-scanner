@@ -23,13 +23,14 @@ SHEET_NAME = "Teachers Attendance"
 CREDENTIALS_FILE = "credentials.json"
 
 st.set_page_config(page_title="Event Scanner", page_icon="📷")
-st.title("📷 Live Scanner: Debug Mode")
+st.title("📷 Live Scanner: Final Version")
 
 # --- 1. CONNECT SERVICES ---
 @st.cache_resource
 def init_services():
     sheet_obj = None
     twilio_obj = None
+    # Google Connection
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = None
@@ -47,6 +48,7 @@ def init_services():
             sheet_obj = g_client.open(SHEET_NAME).sheet1
     except: pass
 
+    # Twilio Connection
     try:
         sid = st.secrets.get("TWILIO_SID", TWILIO_SID)
         token = st.secrets.get("TWILIO_TOKEN", TWILIO_TOKEN)
@@ -58,19 +60,41 @@ def init_services():
 
 sheet, twilio_client = init_services()
 
-# --- 2. NETWORK BOOSTER ---
+# --- 2. NETWORK BOOSTER (THE MEGA LIST YOU WANTED) ---
 @st.cache_data(ttl=3600)
 def get_ice_servers():
+    """
+    The MEGA LIST to punch through 4G Firewalls.
+    """
+    # 1. Try Real Twilio first
     try:
-        if twilio_client: return twilio_client.tokens.create().ice_servers
+        if twilio_client:
+            token = twilio_client.tokens.create()
+            return token.ice_servers
     except: pass
-    return [{"urls": ["stun:stun.l.google.com:19302"]}]
+    
+    # 2. THE MEGA LIST (Your Request)
+    return [
+        {"urls": ["stun:stun.l.google.com:19302"]},
+        {"urls": ["stun:stun1.l.google.com:19302"]},
+        {"urls": ["stun:stun2.l.google.com:19302"]},
+        {"urls": ["stun:stun3.l.google.com:19302"]},
+        {"urls": ["stun:stun4.l.google.com:19302"]},
+        {"urls": ["stun:stun.global.calls.net:3478"]},
+        {"urls": ["stun:stun.ideasip.com"]},
+        {"urls": ["stun:stun.voip.blackberry.com:3478"]},
+        {"urls": ["stun:stun.server.com:3478"]},
+        {"urls": ["stun:stun.schlund.de"]},
+        {"urls": ["stun:stun.voiparound.com:3478"]},
+        {"urls": ["stun:stun.voipbuster.com"]},
+        {"urls": ["stun:stun.voipstunt.com"]},
+    ]
 
 # --- 3. CONNECTION STATUS ---
 if sheet:
     st.success(f"✅ Sheet Connected: {SHEET_NAME}")
 else:
-    st.error("🚨 SHEET FAILED. Check credentials.json or Sheet Name.")
+    st.error("🚨 SHEET FAILED. Check credentials.json")
 
 # --- 4. SCANNER LOGIC ---
 result_queue = queue.Queue()
@@ -89,7 +113,7 @@ class QRProcessor(VideoProcessorBase):
                 pts = np.array(points, np.int32).reshape((-1, 1, 2))
                 cv2.polylines(img, [pts], True, (0, 255, 0), 4)
             
-            # Spam Control (2 seconds)
+            # Allow rescanning every 2 seconds
             if (time.time() - self.last_scan) > 2.0:
                 self.last_scan = time.time()
                 result_queue.put(data)
@@ -105,6 +129,7 @@ rtc_config = RTCConfiguration({"iceServers": ice_servers})
 camera_mode = st.radio("Camera:", ["Back (Mobile)", "Front/Laptop"], horizontal=True)
 
 if camera_mode == "Back (Mobile)":
+    # Low resolution to prevent Mobile Crash
     v_constraints = {"facingMode": {"ideal": "environment"}, "width": {"ideal": 640}, "height": {"ideal": 640}}
 else:
     v_constraints = {"facingMode": "user", "width": {"ideal": 640}}
@@ -117,18 +142,16 @@ webrtc_ctx = webrtc_streamer(
     async_processing=True,
 )
 
-# --- 6. THE LOOP (THE FIX!) ---
+# --- 6. THE INFINITE LOOP (This fixes the "Saving..." freeze) ---
 if webrtc_ctx.state.playing:
-    # We create a placeholder so we can write messages without duplicating them
-    status_area = st.empty()
+    status_area = st.empty() # A dedicated spot for messages
     
-    # LOOP FOREVER while the camera is on
     while True:
         if not webrtc_ctx.state.playing:
-            break # Stop loop if user closes camera
+            break
             
         try:
-            # Check for data
+            # Wait for data from camera...
             scanned_data = result_queue.get(timeout=0.1)
             
             if scanned_data:
@@ -140,16 +163,15 @@ if webrtc_ctx.state.playing:
                 name = re.sub(r'[0-9,.-]', '', raw_text).strip()
                 if not name: name = "Unknown"
 
-                # WRITE
+                # WRITE TO SHEET
                 if sheet:
                     try:
                         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         sheet.append_row([name, phone, timestamp, "ARRIVED"])
-                        status_area.success(f"✅ WROTE TO SHEET: {name}")
+                        status_area.success(f"✅ SAVED: {name}")
                         st.balloons()
                     except Exception as e:
-                        status_area.error(f"❌ SHEET WRITE ERROR: {e}")
+                        status_area.error(f"❌ WRITE ERROR: {e}")
                 
         except queue.Empty:
-            # No data this time? Sleep tiny bit to save CPU
             time.sleep(0.1)
