@@ -65,19 +65,30 @@ def init_services():
 
 sheet, twilio_client = init_services()
 
-# --- 🌐 NETWORK BOOSTER (Twilio TURN) ---
+# --- 🌐 NETWORK BOOSTER (The "Free Mode" Fix) ---
 @st.cache_data(ttl=3600)
 def get_ice_servers():
-    """Get Twilio's Relay Servers to punch through firewalls."""
+    """
+    Try to get Twilio's paid servers. 
+    If keys are fake/invalid, fallback to a robust list of FREE Google servers.
+    """
+    # 1. Try Real Twilio (Best for Mobile)
     try:
         if twilio_client:
             token = twilio_client.tokens.create()
             return token.ice_servers
     except Exception as e:
-        print(f"Twilio TURN Error: {e}")
-    # Fallback to Google
-    return [{"urls": ["stun:stun.l.google.com:19302"]}]
+        print(f"Twilio TURN failed (likely fake keys). Switching to Free Mode.")
 
+    # 2. Free Public Servers (Fallback for testing)
+    # These help punch through some firewalls, but not all.
+    return [
+        {"urls": ["stun:stun.l.google.com:19302"]},
+        {"urls": ["stun:stun1.l.google.com:19302"]},
+        {"urls": ["stun:stun2.l.google.com:19302"]},
+        {"urls": ["stun:stun3.l.google.com:19302"]},
+        {"urls": ["stun:stun4.l.google.com:19302"]},
+    ]
 # --- UI STATUS ---
 if sheet: st.toast("✅ Google Connected")
 if twilio_client: st.toast("✅ Twilio Connected")
