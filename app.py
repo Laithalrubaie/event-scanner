@@ -12,10 +12,11 @@ import json
 import base64
 from twilio.rest import Client
 import gspread
-from google.oauth2.service_account import Credentials # <--- NEW LIBRARY
+from google.oauth2.service_account import Credentials
 from datetime import datetime
 
 # --- CONFIGURATION ---
+# (Note: In a real app, keep these secret! But for your test, this works)
 TWILIO_SID = 'AC14911ac5ee7380049fc38986c318f829'
 TWILIO_TOKEN = 'ba415a1d96f3140cd7dea2b22623ab75'
 TWILIO_FROM = 'whatsapp:+14155238886'
@@ -26,15 +27,13 @@ CREDENTIALS_FILE = "credentials.json"
 st.set_page_config(page_title="Event Scanner", page_icon="📷")
 st.title("📷 Live Event Scanner")
 
-# --- HYBRID CONNECTION SETUP (MODERN) ---
 # --- HYBRID CONNECTION SETUP ---
 @st.cache_resource
 def init_services():
     """
     Establish connections. 
     Returns (sheet_object, twilio_object).
-    If a connection fails, returns None for that object.
-    Strictly NO UI code (st.write, st.error) allowed here.
+    Strictly NO UI code (st.write, st.error) allowed here to prevent cache errors.
     """
     sheet_obj = None
     twilio_obj = None
@@ -51,35 +50,34 @@ def init_services():
         if os.path.exists(CREDENTIALS_FILE):
             creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scope)
         
-        # Strategy B: Streamlit Cloud Secrets
+        # Strategy B: Streamlit Cloud Secrets (Base64)
         elif "GOOGLE_CREDENTIALS_BASE64" in st.secrets:
-            b64_str = st.secrets["GOOGLE_CREDENTIALS_BASE64"]
-            # Decode b64 -> bytes -> string -> json dict
-            json_str = base64.b64decode(b64_str).decode("utf-8")
-            key_dict = json.loads(json_str)
-            creds = Credentials.from_service_account_info(key_dict, scopes=scope)
+            try:
+                b64_str = st.secrets["GOOGLE_CREDENTIALS_BASE64"]
+                json_str = base64.b64decode(b64_str).decode("utf-8")
+                key_dict = json.loads(json_str)
+                creds = Credentials.from_service_account_info(key_dict, scopes=scope)
+            except Exception as e:
+                print(f"Base64 Decode Error: {e}")
             
         if creds:
             g_client = gspread.authorize(creds)
             sheet_obj = g_client.open(SHEET_NAME).sheet1
             
     except Exception as e:
-        # Do not st.error(e) here! It causes CacheReplayClosureError.
-        print(f"Google Sheet Error: {e}") # print to console is safe
-        sheet_obj = None
+        print(f"Google Sheet Error: {e}") 
 
     # 2. CONNECT TWILIO
     try:
-        # Use .get() to avoid KeyErrors if secrets are missing
-        sid = st.secrets.get("TWILIO_SID")
-        token = st.secrets.get("TWILIO_TOKEN")
+        # Check if secrets exist, otherwise use the variables at top
+        sid = st.secrets.get("TWILIO_SID", TWILIO_SID)
+        token = st.secrets.get("TWILIO_TOKEN", TWILIO_TOKEN)
         
         if sid and token:
             twilio_obj = Client(sid, token)
             
     except Exception as e:
         print(f"Twilio Error: {e}")
-        twilio_obj = None
     
     return sheet_obj, twilio_obj
 
@@ -87,7 +85,7 @@ def init_services():
 # 1. Run the cached function
 sheet, twilio_client = init_services()
 
-# 2. Handle UI / Errors based on the result (Safe to do here)
+# 2. Handle UI / Errors based on the result
 if sheet:
     st.toast("✅ Google Connected")
 else:
@@ -97,11 +95,7 @@ if twilio_client:
     st.toast("✅ Twilio Connected")
 else:
     st.warning("⚠️ Twilio not connected (SMS/WhatsApp disabled)")
-    
-    return sheet, twilio
 
-# Initialize Connections
-sheet, twilio_client = setup_connections()
 
 # --- THE SCANNER LOGIC ---
 result_queue = queue.Queue()
