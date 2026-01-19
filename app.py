@@ -148,4 +148,72 @@ if sheet: st.toast("✅ Google Ready")
 
 # Camera Setup
 ice_servers = get_ice_servers()
-rtc_config = RTCConfiguration({"iceServers":
+rtc_config = RTCConfiguration({"iceServers": ice_servers})
+
+camera_mode = st.radio("Camera:", ["Back (Mobile)", "Front/Laptop"], horizontal=True)
+
+if camera_mode == "Back (Mobile)":
+    v_constraints = {
+        "facingMode": {"ideal": "environment"},
+        "width": {"ideal": 640}, 
+        "height": {"ideal": 640}
+    }
+else:
+    v_constraints = {"facingMode": "user", "width": {"ideal": 640}}
+
+webrtc_ctx = webrtc_streamer(
+    key="scanner",
+    video_processor_factory=QRProcessor,
+    rtc_configuration=rtc_config,
+    media_stream_constraints={"video": v_constraints, "audio": False},
+    async_processing=True,
+)
+
+# --- 6. PROCESS & SAVE ---
+if webrtc_ctx.state.playing:
+    try:
+        # Get data from scanner
+        scanned_data = result_queue.get(timeout=0.1)
+        
+        if scanned_data:
+            # 1. Parse Data
+            raw_text = scanned_data
+            phone = re.sub(r'\D', '', raw_text)
+            name = re.sub(r'[0-9,.-]', '', raw_text).strip()
+            if not name: name = "Unknown"
+
+            # 2. DOUBLE CHECK: Is it really new? (Avoid race conditions)
+            if phone in st.session_state.db_numbers:
+                pass # Ignore, just processed
+            else:
+                st.success(f"Processing New Guest: {name}")
+                
+                # 3. Add to Local Database IMMEDIATELY (so camera turns Red)
+                st.session_state.db_numbers.add(phone)
+
+                # 4. Format Phone for WhatsApp
+                wa_phone = phone
+                if len(wa_phone) <= 11:
+                    if wa_phone.startswith("0"): wa_phone = "+964" + wa_phone[1:]
+                    else: wa_phone = "+964" + wa_phone
+                else: wa_phone = "+" + wa_phone
+
+                # 5. Save to Google Sheet
+                if sheet:
+                    try:
+                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        sheet.append_row([name, phone, timestamp, "ARRIVED"])
+                        st.toast(f"✅ Saved to Sheet: {name}")
+                    except Exception as e:
+                        st.error(f"Sheet Error: {e}")
+
+                # 6. Send WhatsApp
+                if twilio_client:
+                    try:
+                        msg = f"Welcome {name}! You are successfully checked in."
+                        twilio_client.messages.create(body=msg, from_=TWILIO_FROM, to=f"whatsapp:{wa_phone}")
+                        st.toast(f"📨 WhatsApp Sent!")
+                    except: pass
+
+    except queue.Empty:
+        pass
