@@ -3,253 +3,103 @@ from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfigurati
 import cv2
 import numpy as np
 import av
-import threading
-import time
+import queue
 import re
 import os
-import queue
 import json
 import base64
-from twilio.rest import Client
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 
 # --- CONFIGURATION ---
-TWILIO_SID = 'AC14911ac5ee7380049fc38986c318f829'
-TWILIO_TOKEN = 'ba415a1d96f3140cd7dea2b22623ab75'
-TWILIO_FROM = 'whatsapp:+14155238886'
-
-SHEET_NAME = "Teachers Attendance"
+SHEET_NAME = "Teachers Attendance" # CHECK SPELLING!
 CREDENTIALS_FILE = "credentials.json"
 
-st.set_page_config(page_title="Event Scanner", page_icon="📷")
-st.title("📷 Live Event Scanner")
+st.set_page_config(page_title="Debug Scanner", page_icon="🐞")
+st.title("🐞 Debug Mode: Force Write")
 
-# --- 0. GLOBAL MEMORY ---
-if 'phone_cache' not in st.session_state:
-    st.session_state.phone_cache = set()
-
-# Helper to sync global memory
-PHONE_CACHE = st.session_state.phone_cache
-
-# --- 1. CONNECTION SETUP ---
+# --- 1. CONNECT GOOGLE (Simplified) ---
 @st.cache_resource
-def init_services():
-    sheet_obj = None
-    twilio_obj = None
-
-    # Connect Google
+def get_sheet():
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        creds = None
         if os.path.exists(CREDENTIALS_FILE):
             creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scope)
+            return gspread.authorize(creds).open(SHEET_NAME).sheet1
         elif "GOOGLE_CREDENTIALS_BASE64" in st.secrets:
-            try:
-                b64_str = st.secrets["GOOGLE_CREDENTIALS_BASE64"]
-                json_str = base64.b64decode(b64_str).decode("utf-8")
-                key_dict = json.loads(json_str)
-                creds = Credentials.from_service_account_info(key_dict, scopes=scope)
-            except Exception as e:
-                print(f"Base64 Error: {e}")
-        
-        if creds:
-            g_client = gspread.authorize(creds)
-            sheet_obj = g_client.open(SHEET_NAME).sheet1
-            
+            b64_str = st.secrets["GOOGLE_CREDENTIALS_BASE64"]
+            json_str = base64.b64decode(b64_str).decode("utf-8")
+            creds = Credentials.from_service_account_info(json.loads(json_str), scopes=scope)
+            return gspread.authorize(creds).open(SHEET_NAME).sheet1
     except Exception as e:
-        print(f"Google Error: {e}")
+        return None
 
-    # Connect Twilio
-    try:
-        sid = st.secrets.get("TWILIO_SID", TWILIO_SID)
-        token = st.secrets.get("TWILIO_TOKEN", TWILIO_TOKEN)
-        if sid and token:
-            twilio_obj = Client(sid, token)
-    except: pass
-    
-    return sheet_obj, twilio_obj
+sheet = get_sheet()
 
-sheet, twilio_client = init_services()
-
-# --- ⚠️ CONNECTION DEBUGGER ⚠️ ---
-if sheet is None:
-    st.error("🚨 CRITICAL ERROR: Google Sheet is NOT connected.")
-    st.info("Check: 1. credentials.json exists? 2. Did you share the sheet with the client_email?")
+if sheet:
+    st.success(f"✅ Sheet Connected: {SHEET_NAME}")
 else:
-    st.success("✅ Google Sheet Connected & Ready")
+    st.error("❌ Sheet Connection FAILED. Check credentials.")
 
-if twilio_client is None:
-    st.warning("⚠️ Twilio is OFF (Fake keys or missing). WhatsApp will not send.")
-
-# --- 2. LOAD DATABASE ---
-def load_existing_db():
-    if sheet:
-        try:
-            # Get all values from Column 2
-            phone_column = sheet.col_values(2)[1:] 
-            clean_set = set()
-            for p in phone_column:
-                clean_num = re.sub(r'\D', '', str(p))
-                if clean_num:
-                    clean_set.add(clean_num)
-            
-            # Update both memories
-            st.session_state.phone_cache = clean_set
-            global PHONE_CACHE
-            PHONE_CACHE = clean_set
-            
-            st.toast(f"📚 Database Loaded: {len(clean_set)} guests.")
-        except Exception as e:
-            st.error(f"Database Load Error: {e}")
-
-# Load once
-if not st.session_state.phone_cache:
-    load_existing_db()
-
-# --- 3. NETWORK BOOSTER (THE MEGA LIST) ---
-@st.cache_data(ttl=3600)
-def get_ice_servers():
-    """
-    If real Twilio keys are missing, we use a MASSIVE list of free public STUN servers.
-    This increases the chance of punching through the 4G firewall.
-    """
-    # 1. Try Real Twilio (If you ever buy real keys)
-    try:
-        if twilio_client:
-            token = twilio_client.tokens.create()
-            return token.ice_servers
-    except: pass
-    
-    # 2. THE MEGA LIST (Free Public Servers)
-    return [
-        {"urls": ["stun:stun.l.google.com:19302"]},
-        {"urls": ["stun:stun1.l.google.com:19302"]},
-        {"urls": ["stun:stun2.l.google.com:19302"]},
-        {"urls": ["stun:stun3.l.google.com:19302"]},
-        {"urls": ["stun:stun4.l.google.com:19302"]},
-        {"urls": ["stun:stun.global.calls.net:3478"]},
-        {"urls": ["stun:stun.ideasip.com"]},
-        {"urls": ["stun:stun.voip.blackberry.com:3478"]},
-        {"urls": ["stun:stun.server.com:3478"]},
-        {"urls": ["stun:stun.schlund.de"]},
-        {"urls": ["stun:stun.voiparound.com:3478"]},
-        {"urls": ["stun:stun.voipbuster.com"]},
-        {"urls": ["stun:stun.voipstunt.com"]},
-    ]
-
-# --- 4. SCANNER LOGIC ---
+# --- 2. SCANNER LOGIC (No Logic, Just Pass Data) ---
 result_queue = queue.Queue()
 
 class QRProcessor(VideoProcessorBase):
     def __init__(self):
         self.qr_detector = cv2.QRCodeDetector()
+        self.last_scan = 0
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
         data, points, _ = self.qr_detector.detectAndDecode(img)
         
-        message = ""
-        color = (0, 255, 0)
-
         if data:
+            # Draw Box
             if points is not None:
                 pts = np.array(points, np.int32).reshape((-1, 1, 2))
+                cv2.polylines(img, [pts], True, (0, 255, 0), 4)
+            
+            # Spam Control (2 seconds only)
+            if (time.time() - self.last_scan) > 2.0:
+                self.last_scan = time.time()
+                result_queue.put(data)
                 
-                # Check Global Variable (Thread Safe!)
-                raw_phone = re.sub(r'\D', '', data) 
-                
-                # Use the global PHONE_CACHE
-                if raw_phone in PHONE_CACHE:
-                    message = "ALREADY REGISTERED"
-                    color = (0, 0, 255) # Red
-                    cv2.polylines(img, [pts], True, color, 4)
-                else:
-                    message = "NEW GUEST!"
-                    color = (0, 255, 0) # Green
-                    cv2.polylines(img, [pts], True, color, 4)
-                    # Put in queue to save
-                    result_queue.put(data)
-
-            cv2.putText(img, message, (50, 80), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 4)
+            cv2.putText(img, "SAVING...", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- 5. UI & COMPONENT ---
-ice_servers = get_ice_servers()
-rtc_config = RTCConfiguration({"iceServers": ice_servers})
-
-camera_mode = st.radio("Camera:", ["Back (Mobile)", "Front/Laptop"], horizontal=True)
-
-if camera_mode == "Back (Mobile)":
-    v_constraints = {
-        "facingMode": {"ideal": "environment"},
-        "width": {"ideal": 640}, 
-        "height": {"ideal": 640}
-    }
-else:
-    v_constraints = {"facingMode": "user", "width": {"ideal": 640}}
+# --- 3. UI ---
+# Use Free Servers to avoid network issues
+rtc_config = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
 
 webrtc_ctx = webrtc_streamer(
-    key="scanner",
+    key="debug_scanner",
     video_processor_factory=QRProcessor,
     rtc_configuration=rtc_config,
-    media_stream_constraints={"video": v_constraints, "audio": False},
+    media_stream_constraints={"video": True, "audio": False},
     async_processing=True,
 )
 
-# --- 6. PROCESS & SAVE (DEBUG MODE) ---
+# --- 4. THE WRITE LOOP ---
+import time
 if webrtc_ctx.state.playing:
     try:
-        scanned_data = result_queue.get(timeout=0.1)
-        if scanned_data:
-            # 1. Show raw data (Debug)
-            st.info(f"⚡ Received Data: {scanned_data}")
+        data = result_queue.get(timeout=0.1)
+        if data:
+            st.info(f"⚡ CAMERA SAW: {data}")
             
-            raw_text = scanned_data
-            phone = re.sub(r'\D', '', raw_text)
-            name = re.sub(r'[0-9,.-]', '', raw_text).strip()
-            if not name: name = "Unknown"
-
-            # 2. DOUBLE CHECK against cache
-            if phone in PHONE_CACHE:
-                st.warning(f"Skipping {name}: Already in cache.")
+            if sheet:
+                st.write("Attempting to write to sheet...")
+                try:
+                    # Write RAW data first to test connection
+                    sheet.append_row([str(data), "Debug Test", datetime.now().strftime("%H:%M:%S")])
+                    st.success("✅ WROTE TO SHEET! Check it now.")
+                    st.balloons()
+                except Exception as e:
+                    st.error(f"❌ WRITE FAILED: {e}")
             else:
-                st.success(f"Saving New Guest: {name}...")
+                st.error("Cannot write: Sheet is disconnected.")
                 
-                # 3. Save to Cache FIRST
-                PHONE_CACHE.add(phone)
-                st.session_state.phone_cache.add(phone)
-
-                # 4. Save to Sheet
-                if sheet:
-                    try:
-                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        sheet.append_row([name, phone, timestamp, "ARRIVED"])
-                        st.balloons() # Visual Success
-                        st.toast(f"✅ Saved to Sheet: {name}")
-                    except Exception as e:
-                        # ⚠️ SHOW THE ERROR
-                        st.error(f"❌ SHEET WRITE FAILED: {e}")
-                else:
-                    st.error("❌ Sheet is None (Not Connected)")
-
-                # 5. WhatsApp
-                if twilio_client:
-                    try:
-                        wa_phone = phone
-                        if len(wa_phone) <= 11:
-                            if wa_phone.startswith("0"): wa_phone = "+964" + wa_phone[1:]
-                            else: wa_phone = "+964" + wa_phone
-                        else: wa_phone = "+" + wa_phone
-                        
-                        msg = f"Welcome {name}! You are successfully checked in."
-                        twilio_client.messages.create(body=msg, from_=TWILIO_FROM, to=f"whatsapp:{wa_phone}")
-                        st.toast(f"📨 Sent!")
-                    except Exception as e:
-                        st.warning(f"Twilio Error: {e}")
-
     except queue.Empty:
         pass
