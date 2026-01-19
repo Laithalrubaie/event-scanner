@@ -1,10 +1,4 @@
 import streamlit as st
-
-# --- 🛠️ MONKEY PATCH FIX (Crucial for Mobile) ---
-if not hasattr(st, "experimental_rerun"):
-    st.experimental_rerun = st.rerun
-# ------------------------------------------------
-
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 import cv2
 import numpy as np
@@ -22,6 +16,7 @@ from google.oauth2.service_account import Credentials
 from datetime import datetime
 
 # --- CONFIGURATION ---
+# (Make sure these keys are REAL. If they are fake, mobile video will stay black!)
 TWILIO_SID = 'AC14911ac5ee7380049fc38986c318f829'
 TWILIO_TOKEN = 'ba415a1d96f3140cd7dea2b22623ab75'
 TWILIO_FROM = 'whatsapp:+14155238886'
@@ -70,18 +65,17 @@ def init_services():
 
 sheet, twilio_client = init_services()
 
-# --- 🌐 NETWORK BOOSTER (Twilio TURN Servers) ---
+# --- 🌐 NETWORK BOOSTER (Twilio TURN) ---
 @st.cache_data(ttl=3600)
 def get_ice_servers():
-    """
-    Get Twilio's Global Relay Servers to punch through firewalls.
-    """
+    """Get Twilio's Relay Servers to punch through firewalls."""
     try:
         if twilio_client:
             token = twilio_client.tokens.create()
             return token.ice_servers
     except Exception as e:
         print(f"Twilio TURN Error: {e}")
+    # Fallback to Google
     return [{"urls": ["stun:stun.l.google.com:19302"]}]
 
 # --- UI STATUS ---
@@ -91,7 +85,6 @@ if twilio_client: st.toast("✅ Twilio Connected")
 # --- SCANNER LOGIC ---
 result_queue = queue.Queue()
 
-# UPDATED: Inherit from VideoProcessorBase (New Standard)
 class QRProcessor(VideoProcessorBase):
     def __init__(self):
         self.qr_detector = cv2.QRCodeDetector()
@@ -122,13 +115,16 @@ class QRProcessor(VideoProcessorBase):
 ice_servers = get_ice_servers()
 rtc_configuration = RTCConfiguration({"iceServers": ice_servers})
 
-# UPDATED: Use video_processor_factory (New Standard)
+# CAMERA SELECTOR (Fix for black screen issues)
+camera_mode = st.radio("Select Camera:", ["Back Camera (Mobile)", "Front/Laptop"], horizontal=True)
+facing_mode = "environment" if camera_mode == "Back Camera (Mobile)" else "user"
+
 webrtc_ctx = webrtc_streamer(
     key="scanner",
-    video_processor_factory=QRProcessor, # <--- FIXED NAME HERE
+    video_processor_factory=QRProcessor, # Updated Name
     rtc_configuration=rtc_configuration,
     media_stream_constraints={
-        "video": True,
+        "video": {"facingMode": facing_mode}, # Dynamic selection
         "audio": False
     },
     async_processing=True,
