@@ -5,7 +5,7 @@ if not hasattr(st, "experimental_rerun"):
     st.experimental_rerun = st.rerun
 # ------------------------------------------------
 
-from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, RTCConfiguration
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 import cv2
 import numpy as np
 import av
@@ -22,7 +22,6 @@ from google.oauth2.service_account import Credentials
 from datetime import datetime
 
 # --- CONFIGURATION ---
-# (Ideally keep these in st.secrets for production)
 TWILIO_SID = 'AC14911ac5ee7380049fc38986c318f829'
 TWILIO_TOKEN = 'ba415a1d96f3140cd7dea2b22623ab75'
 TWILIO_FROM = 'whatsapp:+14155238886'
@@ -71,22 +70,18 @@ def init_services():
 
 sheet, twilio_client = init_services()
 
-# --- 🌐 NETWORK BOOSTER (The Fix) ---
-@st.cache_data(ttl=3600) # Cache this for 1 hour to save API calls
+# --- 🌐 NETWORK BOOSTER (Twilio TURN Servers) ---
+@st.cache_data(ttl=3600)
 def get_ice_servers():
     """
-    Ask Twilio for the best Relay Servers (TURN) for this specific location.
-    This punches through firewalls in Iraq/Mobile Networks.
+    Get Twilio's Global Relay Servers to punch through firewalls.
     """
     try:
-        # Use the Twilio Client we already created
         if twilio_client:
             token = twilio_client.tokens.create()
             return token.ice_servers
     except Exception as e:
         print(f"Twilio TURN Error: {e}")
-    
-    # Fallback to Google's free servers if Twilio fails
     return [{"urls": ["stun:stun.l.google.com:19302"]}]
 
 # --- UI STATUS ---
@@ -96,7 +91,8 @@ if twilio_client: st.toast("✅ Twilio Connected")
 # --- SCANNER LOGIC ---
 result_queue = queue.Queue()
 
-class QRProcessor(VideoTransformerBase):
+# UPDATED: Inherit from VideoProcessorBase (New Standard)
+class QRProcessor(VideoProcessorBase):
     def __init__(self):
         self.qr_detector = cv2.QRCodeDetector()
         self.scanned_codes = set()
@@ -123,15 +119,14 @@ class QRProcessor(VideoTransformerBase):
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # --- WEBRTC COMPONENT ---
-# 1. Get the Powerful Network Config
 ice_servers = get_ice_servers()
 rtc_configuration = RTCConfiguration({"iceServers": ice_servers})
 
-# 2. Render Camera
+# UPDATED: Use video_processor_factory (New Standard)
 webrtc_ctx = webrtc_streamer(
     key="scanner",
-    video_transformer_factory=QRProcessor,
-    rtc_configuration=rtc_configuration, # <--- Using Twilio TURN servers now
+    video_processor_factory=QRProcessor, # <--- FIXED NAME HERE
+    rtc_configuration=rtc_configuration,
     media_stream_constraints={
         "video": True,
         "audio": False
