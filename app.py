@@ -16,7 +16,6 @@ from google.oauth2.service_account import Credentials
 from datetime import datetime
 
 # --- CONFIGURATION ---
-# (Make sure these keys are REAL. If they are fake, mobile video will stay black!)
 TWILIO_SID = 'AC14911ac5ee7380049fc38986c318f829'
 TWILIO_TOKEN = 'ba415a1d96f3140cd7dea2b22623ab75'
 TWILIO_FROM = 'whatsapp:+14155238886'
@@ -65,30 +64,22 @@ def init_services():
 
 sheet, twilio_client = init_services()
 
-# --- 🌐 NETWORK BOOSTER (The "Free Mode" Fix) ---
+# --- 🌐 NETWORK BOOSTER ---
 @st.cache_data(ttl=3600)
 def get_ice_servers():
-    """
-    Try to get Twilio's paid servers. 
-    If keys are fake/invalid, fallback to a robust list of FREE Google servers.
-    """
-    # 1. Try Real Twilio (Best for Mobile)
+    # Try Twilio first
     try:
         if twilio_client:
             token = twilio_client.tokens.create()
             return token.ice_servers
-    except Exception as e:
-        print(f"Twilio TURN failed (likely fake keys). Switching to Free Mode.")
-
-    # 2. Free Public Servers (Fallback for testing)
-    # These help punch through some firewalls, but not all.
+    except: pass
+    
+    # Fallback to Free Servers
     return [
         {"urls": ["stun:stun.l.google.com:19302"]},
         {"urls": ["stun:stun1.l.google.com:19302"]},
-        {"urls": ["stun:stun2.l.google.com:19302"]},
-        {"urls": ["stun:stun3.l.google.com:19302"]},
-        {"urls": ["stun:stun4.l.google.com:19302"]},
     ]
+
 # --- UI STATUS ---
 if sheet: st.toast("✅ Google Connected")
 if twilio_client: st.toast("✅ Twilio Connected")
@@ -126,16 +117,29 @@ class QRProcessor(VideoProcessorBase):
 ice_servers = get_ice_servers()
 rtc_configuration = RTCConfiguration({"iceServers": ice_servers})
 
-# CAMERA SELECTOR (Fix for black screen issues)
+# CAMERA SELECTOR
 camera_mode = st.radio("Select Camera:", ["Back Camera (Mobile)", "Front/Laptop"], horizontal=True)
-facing_mode = "environment" if camera_mode == "Back Camera (Mobile)" else "user"
+
+# THE FIX: Use "ideal" constraints + Limit Resolution
+if camera_mode == "Back Camera (Mobile)":
+    # Ask for environment, but limit width to 640px to prevent crashing
+    video_constraints = {
+        "facingMode": {"ideal": "environment"},
+        "width": {"min": 480, "ideal": 640, "max": 1280},
+        "height": {"min": 480, "ideal": 640, "max": 720}
+    }
+else:
+    video_constraints = {
+        "facingMode": "user",
+        "width": {"min": 480, "ideal": 640, "max": 1280}
+    }
 
 webrtc_ctx = webrtc_streamer(
     key="scanner",
-    video_processor_factory=QRProcessor, # Updated Name
+    video_processor_factory=QRProcessor,
     rtc_configuration=rtc_configuration,
     media_stream_constraints={
-        "video": {"facingMode": facing_mode}, # Dynamic selection
+        "video": video_constraints, # <--- NEW OPTIMIZED SETTINGS
         "audio": False
     },
     async_processing=True,
@@ -148,19 +152,16 @@ if webrtc_ctx.state.playing:
         if scanned_data:
             st.success(f"Processing: {scanned_data}")
             
-            # PARSE
             raw_text = scanned_data
             phone = re.sub(r'\D', '', raw_text)
             name = re.sub(r'[0-9,.-]', '', raw_text).strip()
             if not name: name = "Unknown"
             
-            # FORMAT
             if len(phone) <= 11:
                 if phone.startswith("0"): phone = "+964" + phone[1:]
                 else: phone = "+964" + phone
             else: phone = "+" + phone
 
-            # SAVE
             if sheet:
                 try:
                     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -168,7 +169,6 @@ if webrtc_ctx.state.playing:
                     st.toast(f"✅ Saved: {name}")
                 except: st.error("Sheet Error")
 
-            # SEND
             if twilio_client:
                 try:
                     msg = f"Welcome {name}! You are checked in."
