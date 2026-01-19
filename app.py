@@ -23,7 +23,7 @@ SHEET_NAME = "Teachers Attendance"
 CREDENTIALS_FILE = "credentials.json"
 
 st.set_page_config(page_title="Event Scanner", page_icon="📷")
-st.title("📷 Live Scanner: Safe Mode")
+st.title("📷 Live Scanner: Continuous Mode")
 
 # --- 1. CONNECT SERVICES ---
 @st.cache_resource
@@ -58,38 +58,26 @@ def init_services():
 
 sheet, twilio_client = init_services()
 
-# --- 2. NETWORK BOOSTER (MEGA LIST) ---
+# --- 2. NETWORK CONFIG (Simple & Strong) ---
 @st.cache_data(ttl=3600)
 def get_ice_servers():
     try:
         if twilio_client: return twilio_client.tokens.create().ice_servers
     except: pass
+    # Using only the 2 most reliable Google servers to avoid timeouts
     return [
         {"urls": ["stun:stun.l.google.com:19302"]},
         {"urls": ["stun:stun1.l.google.com:19302"]},
-        {"urls": ["stun:stun2.l.google.com:19302"]},
-        {"urls": ["stun:stun3.l.google.com:19302"]},
-        {"urls": ["stun:stun4.l.google.com:19302"]},
-        {"urls": ["stun:stun.global.calls.net:3478"]},
-        {"urls": ["stun:stun.ideasip.com"]},
-        {"urls": ["stun:stun.voip.blackberry.com:3478"]},
-        {"urls": ["stun:stun.server.com:3478"]},
-        {"urls": ["stun:stun.schlund.de"]},
-        {"urls": ["stun:stun.voiparound.com:3478"]},
-        {"urls": ["stun:stun.voipbuster.com"]},
-        {"urls": ["stun:stun.voipstunt.com"]},
     ]
 
-# --- 3. CONNECTION STATUS ---
+# --- 3. STATUS ---
 if sheet:
     st.success(f"✅ Sheet Connected: {SHEET_NAME}")
 else:
     st.error("🚨 SHEET FAILED.")
 
 # --- 4. SCANNER LOGIC ---
-# We use a Queue to send data from the camera thread to the main thread
-if 'result_queue' not in st.session_state:
-    st.session_state.result_queue = queue.Queue()
+result_queue = queue.Queue()
 
 class QRProcessor(VideoProcessorBase):
     def __init__(self):
@@ -105,17 +93,16 @@ class QRProcessor(VideoProcessorBase):
                 pts = np.array(points, np.int32).reshape((-1, 1, 2))
                 cv2.polylines(img, [pts], True, (0, 255, 0), 4)
             
-            # Spam Control (2 seconds)
-            if (time.time() - self.last_scan) > 2.0:
+            # Spam Control (3 seconds)
+            if (time.time() - self.last_scan) > 3.0:
                 self.last_scan = time.time()
-                # Send data to main app
-                st.session_state.result_queue.put(data)
+                result_queue.put(data)
                 
-            cv2.putText(img, "PROCESSING...", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
+            cv2.putText(img, "SCANNED!", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- 5. UI & COMPONENT ---
+# --- 5. UI SETUP ---
 ice_servers = get_ice_servers()
 rtc_config = RTCConfiguration({"iceServers": ice_servers})
 
@@ -126,49 +113,51 @@ if camera_mode == "Back (Mobile)":
 else:
     v_constraints = {"facingMode": "user", "width": {"ideal": 640}}
 
-# THE KEY FIX: Handle the component safely
-try:
-    webrtc_ctx = webrtc_streamer(
-        key="scanner",
-        video_processor_factory=QRProcessor,
-        rtc_configuration=rtc_config,
-        media_stream_constraints={"video": v_constraints, "audio": False},
-        async_processing=True,
-    )
-except Exception as e:
-    st.warning("Restarting Camera...")
-    st.rerun()
+webrtc_ctx = webrtc_streamer(
+    key="scanner",
+    video_processor_factory=QRProcessor,
+    rtc_configuration=rtc_config,
+    media_stream_constraints={"video": v_constraints, "audio": False},
+    async_processing=True,
+)
 
-# --- 6. CHECK FOR DATA & SAVE (SAFE METHOD) ---
-# This runs every time the script refreshes
+# --- 6. CONTINUOUS PROCESSING LOOP ---
 if webrtc_ctx.state.playing:
-    try:
-        # Check if the camera put anything in the mailbox
-        scanned_data = st.session_state.result_queue.get(timeout=0.1)
-        
-        if scanned_data:
-            st.info(f"⚡ CAMERA SAW: {scanned_data}")
+    # Create a placeholder box for messages
+    message_box = st.empty()
+    
+    while True:
+        if not webrtc_ctx.state.playing:
+            break
             
-            # PARSE
-            raw_text = scanned_data
-            phone = re.sub(r'\D', '', raw_text)
-            name = re.sub(r'[0-9,.-]', '', raw_text).strip()
-            if not name: name = "Unknown"
+        try:
+            # Check for new scan
+            scanned_data = result_queue.get(timeout=0.1)
+            
+            if scanned_data:
+                # 1. Show "Processing"
+                message_box.info(f"⚡ Processing: {scanned_data}...")
+                
+                # 2. Parse
+                raw_text = scanned_data
+                phone = re.sub(r'\D', '', raw_text)
+                name = re.sub(r'[0-9,.-]', '', raw_text).strip()
+                if not name: name = "Unknown"
 
-            # WRITE
-            if sheet:
-                try:
-                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    sheet.append_row([name, phone, timestamp, "ARRIVED"])
-                    st.success(f"✅ SAVED: {name}")
-                    st.balloons()
-                    
-                    # ⚠️ AUTO-REFRESH TO KEEP IT STABLE
-                    time.sleep(1) # Let user see the balloon
-                    st.rerun() # Refresh the app for the next person
-                    
-                except Exception as e:
-                    st.error(f"❌ WRITE ERROR: {e}")
-
-    except queue.Empty:
-        pass
+                # 3. Save
+                if sheet:
+                    try:
+                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        sheet.append_row([name, phone, timestamp, "ARRIVED"])
+                        
+                        # 4. Show Success for 3 seconds
+                        message_box.success(f"✅ SAVED: {name}")
+                        st.balloons()
+                        time.sleep(3) # Wait so user can see it
+                        message_box.empty() # Clear message for next person
+                        
+                    except Exception as e:
+                        message_box.error(f"❌ Error: {e}")
+                
+        except queue.Empty:
+            time.sleep(0.1)
