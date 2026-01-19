@@ -15,7 +15,6 @@ from google.oauth2.service_account import Credentials
 from datetime import datetime
 
 # --- CONFIGURATION ---
-# (Ideally, move these to secrets for production, but this works for testing)
 TWILIO_SID = 'AC14911ac5ee7380049fc38986c318f829'
 TWILIO_TOKEN = 'ba415a1d96f3140cd7dea2b22623ab75'
 TWILIO_FROM = 'whatsapp:+14155238886'
@@ -31,8 +30,6 @@ st.title("📷 Live Scanner: Debug Mode")
 def init_services():
     sheet_obj = None
     twilio_obj = None
-
-    # Connect Google
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = None
@@ -44,17 +41,12 @@ def init_services():
                 json_str = base64.b64decode(b64_str).decode("utf-8")
                 key_dict = json.loads(json_str)
                 creds = Credentials.from_service_account_info(key_dict, scopes=scope)
-            except Exception as e:
-                print(f"Base64 Error: {e}")
-        
+            except: pass
         if creds:
             g_client = gspread.authorize(creds)
             sheet_obj = g_client.open(SHEET_NAME).sheet1
-            
-    except Exception as e:
-        print(f"Google Error: {e}")
+    except: pass
 
-    # Connect Twilio
     try:
         sid = st.secrets.get("TWILIO_SID", TWILIO_SID)
         token = st.secrets.get("TWILIO_TOKEN", TWILIO_TOKEN)
@@ -66,36 +58,13 @@ def init_services():
 
 sheet, twilio_client = init_services()
 
-# --- 2. NETWORK BOOSTER (THE MEGA LIST) ---
+# --- 2. NETWORK BOOSTER ---
 @st.cache_data(ttl=3600)
 def get_ice_servers():
-    """
-    If real Twilio keys are missing, we use a MASSIVE list of free public STUN servers.
-    This increases the chance of punching through the 4G firewall.
-    """
-    # 1. Try Real Twilio
     try:
-        if twilio_client:
-            token = twilio_client.tokens.create()
-            return token.ice_servers
+        if twilio_client: return twilio_client.tokens.create().ice_servers
     except: pass
-    
-    # 2. THE MEGA LIST (Free Public Servers)
-    return [
-        {"urls": ["stun:stun.l.google.com:19302"]},
-        {"urls": ["stun:stun1.l.google.com:19302"]},
-        {"urls": ["stun:stun2.l.google.com:19302"]},
-        {"urls": ["stun:stun3.l.google.com:19302"]},
-        {"urls": ["stun:stun4.l.google.com:19302"]},
-        {"urls": ["stun:stun.global.calls.net:3478"]},
-        {"urls": ["stun:stun.ideasip.com"]},
-        {"urls": ["stun:stun.voip.blackberry.com:3478"]},
-        {"urls": ["stun:stun.server.com:3478"]},
-        {"urls": ["stun:stun.schlund.de"]},
-        {"urls": ["stun:stun.voiparound.com:3478"]},
-        {"urls": ["stun:stun.voipbuster.com"]},
-        {"urls": ["stun:stun.voipstunt.com"]},
-    ]
+    return [{"urls": ["stun:stun.l.google.com:19302"]}]
 
 # --- 3. CONNECTION STATUS ---
 if sheet:
@@ -120,7 +89,7 @@ class QRProcessor(VideoProcessorBase):
                 pts = np.array(points, np.int32).reshape((-1, 1, 2))
                 cv2.polylines(img, [pts], True, (0, 255, 0), 4)
             
-            # Spam Control (2 seconds only)
+            # Spam Control (2 seconds)
             if (time.time() - self.last_scan) > 2.0:
                 self.last_scan = time.time()
                 result_queue.put(data)
@@ -136,11 +105,7 @@ rtc_config = RTCConfiguration({"iceServers": ice_servers})
 camera_mode = st.radio("Camera:", ["Back (Mobile)", "Front/Laptop"], horizontal=True)
 
 if camera_mode == "Back (Mobile)":
-    v_constraints = {
-        "facingMode": {"ideal": "environment"},
-        "width": {"ideal": 640}, 
-        "height": {"ideal": 640}
-    }
+    v_constraints = {"facingMode": {"ideal": "environment"}, "width": {"ideal": 640}, "height": {"ideal": 640}}
 else:
     v_constraints = {"facingMode": "user", "width": {"ideal": 640}}
 
@@ -152,34 +117,39 @@ webrtc_ctx = webrtc_streamer(
     async_processing=True,
 )
 
-# --- 6. THE FORCE WRITE LOOP ---
+# --- 6. THE LOOP (THE FIX!) ---
 if webrtc_ctx.state.playing:
-    try:
-        scanned_data = result_queue.get(timeout=0.1)
-        
-        if scanned_data:
-            # 1. SHOW RAW DATA (Does camera work?)
-            st.info(f"⚡ CAMERA SAW: {scanned_data}")
+    # We create a placeholder so we can write messages without duplicating them
+    status_area = st.empty()
+    
+    # LOOP FOREVER while the camera is on
+    while True:
+        if not webrtc_ctx.state.playing:
+            break # Stop loop if user closes camera
             
-            # 2. PARSE DATA
-            raw_text = scanned_data
-            phone = re.sub(r'\D', '', raw_text)
-            name = re.sub(r'[0-9,.-]', '', raw_text).strip()
-            if not name: name = "Unknown"
+        try:
+            # Check for data
+            scanned_data = result_queue.get(timeout=0.1)
+            
+            if scanned_data:
+                status_area.info(f"⚡ CAMERA SAW: {scanned_data}")
+                
+                # PARSE
+                raw_text = scanned_data
+                phone = re.sub(r'\D', '', raw_text)
+                name = re.sub(r'[0-9,.-]', '', raw_text).strip()
+                if not name: name = "Unknown"
 
-            # 3. FORCE SAVE (No "Already Registered" check)
-            if sheet:
-                try:
-                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    sheet.append_row([name, phone, timestamp, "ARRIVED"])
-                    st.balloons()
-                    st.success(f"✅ WROTE TO SHEET: {name}")
-                except Exception as e:
-                    # ⚠️ SHOW THE REAL ERROR
-                    st.error(f"❌ SHEET WRITE ERROR: {e}")
-                    st.write(f"Details: {e}") # Print details to screen
-            else:
-                st.error("Sheet object is None (Connection Failed previously)")
-
-    except queue.Empty:
-        pass
+                # WRITE
+                if sheet:
+                    try:
+                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        sheet.append_row([name, phone, timestamp, "ARRIVED"])
+                        status_area.success(f"✅ WROTE TO SHEET: {name}")
+                        st.balloons()
+                    except Exception as e:
+                        status_area.error(f"❌ SHEET WRITE ERROR: {e}")
+                
+        except queue.Empty:
+            # No data this time? Sleep tiny bit to save CPU
+            time.sleep(0.1)
