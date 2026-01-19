@@ -87,32 +87,51 @@ if twilio_client: st.toast("✅ Twilio Connected")
 # --- SCANNER LOGIC ---
 result_queue = queue.Queue()
 
+# --- SCANNER LOGIC (Improved Visuals) ---
 class QRProcessor(VideoProcessorBase):
     def __init__(self):
         self.qr_detector = cv2.QRCodeDetector()
         self.scanned_codes = set()
         self.last_scan_time = 0
+        self.current_message = ""
+        self.message_color = (0, 255, 0) # Green
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
         data, points, _ = self.qr_detector.detectAndDecode(img)
         
+        current_time = time.time()
+
         if data:
+            # Draw the box around QR Code
             if points is not None:
                 pts = np.array(points, np.int32).reshape((-1, 1, 2))
-                cv2.polylines(img, [pts], True, (0, 255, 0), 4)
-            
-            current_time = time.time()
-            if data not in self.scanned_codes or (current_time - self.last_scan_time > 5):
-                self.scanned_codes.add(data)
-                self.last_scan_time = current_time
-                result_queue.put(data)
-                cv2.putText(img, "SCANNED!", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
-            else:
-                 cv2.putText(img, "Wait...", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                
+                # LOGIC: Is this a NEW code?
+                if data not in self.scanned_codes or (current_time - self.last_scan_time > 5):
+                    # YES -> It is new!
+                    self.scanned_codes.add(data)
+                    self.last_scan_time = current_time
+                    result_queue.put(data)
+                    
+                    # Visual Success
+                    self.current_message = "SUCCESS!"
+                    self.message_color = (0, 255, 0) # Green
+                    cv2.polylines(img, [pts], True, (0, 255, 0), 4)
+
+                else:
+                    # NO -> We already scanned it recently
+                    self.current_message = "ALREADY SCANNED"
+                    self.message_color = (0, 0, 255) # Red
+                    cv2.polylines(img, [pts], True, (0, 0, 255), 4)
+        
+        # Draw the message on the screen (Persist for a bit)
+        if self.current_message:
+            cv2.putText(img, self.current_message, (50, 80), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.5, self.message_color, 4)
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
-
+        
 # --- WEBRTC COMPONENT ---
 ice_servers = get_ice_servers()
 rtc_configuration = RTCConfiguration({"iceServers": ice_servers})
