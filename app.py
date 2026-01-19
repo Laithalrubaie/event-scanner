@@ -220,3 +220,30 @@ if webrtc_ctx.state.playing:
                 
         except queue.Empty:
             time.sleep(0.1)
+
+
+import streamlit as st
+import gspread
+from google.oauth2.service_account import Credentials
+
+st.title("🕵️ Sheet Detective")
+
+try:
+    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    creds = Credentials.from_service_account_file("credentials.json", scopes=scope)
+    client = gspread.authorize(creds)
+    
+    # Open the sheet
+    sheet = client.open("Teachers Attendance").sheet1
+    
+    st.success("✅ I found the sheet!")
+    st.write(f"I am writing data to this URL:")
+    st.code(sheet.url, language="text")  # <--- COPY THIS LINK
+    
+    st.write("Checking the last row...")
+    all_values = sheet.get_all_values()
+    st.write(f"The sheet has {len(all_values)} rows.")
+    st.write(f"The last row contains: {all_values[-1]}")
+
+except Exception as e:
+    st.error(str(e))
