@@ -34,26 +34,34 @@ st.title("📷 Live Event Scanner")
 # ==========================================
 # 🔌 CONNECTION SETUP (Hybrid: Local + Cloud)
 # ==========================================
+# --- HYBRID CONNECTION SETUP ---
 @st.cache_resource
 def setup_connections():
     sheet = None
     twilio = None
 
-    # --- 1. CONNECT TO GOOGLE SHEETS ---
+    # 1. CONNECT GOOGLE SHEETS
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         
-        # Strategy A: Check for a local file (Laptop Mode)
+        # Strategy A: Check for local file (Laptop)
         if os.path.exists(CREDENTIALS_FILE):
             creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
         
-        # Strategy B: Check for Streamlit Secrets (Cloud Mode)
+        # Strategy B: Check for Cloud Secrets (Streamlit Cloud)
         elif "gcp_service_account" in st.secrets:
-            # Create credentials from the secrets dictionary
-            creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
+            # --- THE FIX IS HERE ---
+            # We convert the secrets to a normal dictionary
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            
+            # We manually fix the Private Key string by replacing \\n with real \n
+            if "private_key" in creds_dict:
+                creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+            
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
             
         else:
-            st.error("❌ Key File Missing! Put 'credentials.json' in the folder OR set up Secrets in Streamlit Cloud.")
+            st.error("❌ Key File Missing! Put 'credentials.json' in the folder OR set up Secrets.")
             return None, None
 
         g_client = gspread.authorize(creds)
@@ -61,11 +69,12 @@ def setup_connections():
         st.toast("✅ Google Connected")
         
     except Exception as e:
+        # We clear the cache if there is an error so it tries again next time
+        st.cache_resource.clear()
         st.error(f"❌ Google Connection Error: {e}")
 
-    # --- 2. CONNECT TO TWILIO ---
+    # 2. CONNECT TWILIO
     try:
-        # Check Secrets first (Cloud), then fallback to defaults (Local)
         if "TWILIO_SID" in st.secrets:
             sid = st.secrets["TWILIO_SID"]
             token = st.secrets["TWILIO_TOKEN"]
