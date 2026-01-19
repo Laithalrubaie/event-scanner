@@ -35,6 +35,7 @@ st.title("📷 Live Event Scanner")
 # 🔌 CONNECTION SETUP (Hybrid: Local + Cloud)
 # ==========================================
 # --- HYBRID CONNECTION SETUP ---
+# --- HYBRID CONNECTION SETUP ---
 @st.cache_resource
 def setup_connections():
     sheet = None
@@ -50,14 +51,18 @@ def setup_connections():
         
         # Strategy B: Check for Cloud Secrets (Streamlit Cloud)
         elif "gcp_service_account" in st.secrets:
-            # --- THE FIX IS HERE ---
-            # We convert the secrets to a normal dictionary
+            # تحويل البيانات إلى قاموس قابل للتعديل
             creds_dict = dict(st.secrets["gcp_service_account"])
             
-            # We manually fix the Private Key string by replacing \\n with real \n
+            # --- التصحيح القوي للمفتاح ---
+            # نتأكد من وجود المفتاح أولاً
             if "private_key" in creds_dict:
-                creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-            
+                private_key = creds_dict["private_key"]
+                # 1. إذا كان المفتاح يحتوي على \\n (نصي)، نحوله إلى \n (حقيقي)
+                # 2. نمسح أي علامات تنصيص زائدة قد تكون نسخت بالخطأ
+                private_key = private_key.replace("\\n", "\n").strip('"')
+                creds_dict["private_key"] = private_key
+
             creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
             
         else:
@@ -69,12 +74,13 @@ def setup_connections():
         st.toast("✅ Google Connected")
         
     except Exception as e:
-        # We clear the cache if there is an error so it tries again next time
+        # مسح الكاش لإجبار التطبيق على المحاولة مرة أخرى عند التحديث
         st.cache_resource.clear()
         st.error(f"❌ Google Connection Error: {e}")
 
     # 2. CONNECT TWILIO
     try:
+        # Check Secrets first, then fallback to defaults
         if "TWILIO_SID" in st.secrets:
             sid = st.secrets["TWILIO_SID"]
             token = st.secrets["TWILIO_TOKEN"]
