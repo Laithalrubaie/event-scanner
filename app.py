@@ -140,52 +140,6 @@ webrtc_ctx = webrtc_streamer(
     media_stream_constraints={"video": v_constraints, "audio": False},
     async_processing=True,
 )
-
-# --- 7. SAVE LOOP ---
-if webrtc_ctx.state.playing:
-    status_area = st.empty()
-    
-    while True:
-        if not webrtc_ctx.state.playing:
-            break
-            
-        try:
-            scanned_data = result_queue.get(timeout=0.1)
-            
-            if scanned_data:
-                raw_text = scanned_data
-                phone = re.sub(r'\D', '', raw_text)
-                name = re.sub(r'[0-9,.-]', '', raw_text).strip()
-                if not name: name = "Unknown"
-
-                # Double check memory (just in case)
-                if phone not in st.session_state.scanned_phones:
-                    
-                    # 1. Update Memory IMMEDIATELY
-                    st.session_state.scanned_phones.add(phone)
-                    PHONE_CACHE.add(phone) # Update camera memory too
-
-                    # 2. Save to Sheet
-                    if sheet:
-                        try:
-                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            sheet.append_row([name, phone, timestamp, "ARRIVED"])
-                            status_area.success(f"✅ SAVED: {name}")
-                            st.balloons()
-                        except:
-                            status_area.error("Sheet Error")
-                    
-                    # 3. WhatsApp
-                    if twilio_client:
-                        try:
-                            wa_phone = "+964" + phone[1:] if phone.startswith("0") else "+" + phone
-                            msg = f"Welcome {name}!"
-                            twilio_client.messages.create(body=msg, from_=TWILIO_FROM, to=f"whatsapp:{wa_phone}")
-                        except: pass
-                
-        except queue.Empty:
-            time.sleep(0.1)
-
 # --- 6. DEBUG PROCESSING LOOP ---
 if webrtc_ctx.state.playing:
     message_box = st.empty()
