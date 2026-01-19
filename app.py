@@ -127,21 +127,19 @@ class QRProcessor(VideoTransformerBase):
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # --- UI & WEBRTC ---
-# 1. Setup the Network Helpers (STUN servers)
 rtc_configuration = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
 
-# 2. Open the Camera (Universal Mode)
-# We removed "facingMode: environment" so it works on Laptops too.
 webrtc_ctx = webrtc_streamer(
     key="scanner",
     video_transformer_factory=QRProcessor,
     rtc_configuration=rtc_configuration,
     media_stream_constraints={
-        "video": True, # Just ask for ANY video
-        "audio": False # We don't need audio
+        "video": True, # Works on both Laptop and Mobile
+        "audio": False
     },
+    async_processing=True, # <--- ADD THIS! Helps prevent mobile crashes
 )
 
 # --- PROCESS RESULTS ---
