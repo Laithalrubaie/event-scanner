@@ -127,15 +127,26 @@ class QRProcessor(VideoTransformerBase):
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # --- UI & WEBRTC ---
+# We add multiple free STUN servers to ensure connection works on all networks
 rtc_configuration = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    {"iceServers": [
+        {"urls": ["stun:stun.l.google.com:19302"]},
+        {"urls": ["stun:stun1.l.google.com:19302"]},
+        {"urls": ["stun:stun2.l.google.com:19302"]},
+    ]}
 )
 
 webrtc_ctx = webrtc_streamer(
     key="scanner",
     video_transformer_factory=QRProcessor,
     rtc_configuration=rtc_configuration,
-    media_stream_constraints={"video": {"facingMode": "environment"}},
+    media_stream_constraints={
+        "video": {
+            "facingMode": "environment", # Use Back Camera
+            "width": {"min": 480, "ideal": 720, "max": 1280}, # Force standard resolution
+            "height": {"min": 480, "ideal": 720, "max": 1280},
+        }
+    },
 )
 
 # --- PROCESS RESULTS ---
