@@ -9,15 +9,15 @@ import re
 import os
 import queue
 import json
-import base64 # Added this
+import base64
 from twilio.rest import Client
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials # <--- NEW LIBRARY
 from datetime import datetime
 
 # --- CONFIGURATION ---
-DEFAULT_TWILIO_SID = 'YOUR_TWILIO_SID'
-DEFAULT_TWILIO_TOKEN = 'YOUR_TWILIO_TOKEN'
+TWILIO_SID = 'AC14911ac5ee7380049fc38986c318f829'
+TWILIO_TOKEN = 'ba415a1d96f3140cd7dea2b22623ab75'
 TWILIO_FROM = 'whatsapp:+14155238886'
 
 SHEET_NAME = "Teachers Attendance"
@@ -26,7 +26,7 @@ CREDENTIALS_FILE = "credentials.json"
 st.set_page_config(page_title="Event Scanner", page_icon="📷")
 st.title("📷 Live Event Scanner")
 
-# --- HYBRID CONNECTION SETUP (Base64 Edition) ---
+# --- HYBRID CONNECTION SETUP (MODERN) ---
 @st.cache_resource
 def setup_connections():
     sheet = None
@@ -34,37 +34,42 @@ def setup_connections():
 
     # 1. CONNECT GOOGLE SHEETS
     try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        scope = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
         creds = None
         
-        # Strategy A: Check for local file (Laptop)
+        # Strategy A: Check for local file
         if os.path.exists(CREDENTIALS_FILE):
-            creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
+            creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scope)
         
-        # Strategy B: Check for Base64 Secret (Streamlit Cloud - The Robust Way)
+        # Strategy B: Check for Base64 Secret (Streamlit Cloud)
         elif "GOOGLE_CREDENTIALS_BASE64" in st.secrets:
             try:
-                # Decode the Base64 string back into JSON
+                # Decode Base64
                 b64_str = st.secrets["GOOGLE_CREDENTIALS_BASE64"]
                 json_str = base64.b64decode(b64_str).decode("utf-8")
                 key_dict = json.loads(json_str)
                 
-                creds = ServiceAccountCredentials.from_json_keyfile_dict(key_dict, scope)
+                # Create Credentials from the dictionary
+                creds = Credentials.from_service_account_info(key_dict, scopes=scope)
             except Exception as e:
-                st.error(f"❌ Failed to decode Base64 credentials: {e}")
+                st.error(f"❌ Base64 Decode Error: {e}")
                 return None, None
             
         else:
-            st.error("❌ Key File Missing! Put 'credentials.json' locally OR set 'GOOGLE_CREDENTIALS_BASE64' in Secrets.")
+            st.error("❌ Key File Missing! Add 'credentials.json' locally OR 'GOOGLE_CREDENTIALS_BASE64' in Secrets.")
             return None, None
 
+        # Connect GSpread
         g_client = gspread.authorize(creds)
         sheet = g_client.open(SHEET_NAME).sheet1
         st.toast("✅ Google Connected")
         
     except Exception as e:
-        st.cache_resource.clear() # Clear cache on error
-        st.error(f"❌ Google Connection Error: {e}")
+        st.cache_resource.clear()
+        st.error(f"❌ Connection Error: {e}")
 
     # 2. CONNECT TWILIO
     try:
@@ -96,7 +101,6 @@ class QRProcessor(VideoTransformerBase):
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
-        
         data, points, _ = self.qr_detector.detectAndDecode(img)
         
         if data:
@@ -131,7 +135,6 @@ webrtc_ctx = webrtc_streamer(
 if webrtc_ctx.state.playing:
     try:
         scanned_data = result_queue.get(timeout=0.1)
-        
         if scanned_data:
             st.success(f"Processing: {scanned_data}")
             
@@ -146,7 +149,6 @@ if webrtc_ctx.state.playing:
                 else: phone = "+964" + phone
             else: phone = "+" + phone
 
-            # Sheet
             if sheet:
                 try:
                     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -155,7 +157,6 @@ if webrtc_ctx.state.playing:
                 except Exception as e:
                     st.error(f"Sheet Error: {e}")
 
-            # WhatsApp
             if twilio_client:
                 try:
                     msg = f"Welcome {name}! You are checked in."
