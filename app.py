@@ -1,4 +1,9 @@
 import streamlit as st
+# --- 🛠️ MONKEY PATCH FIX (Must be at the top) ---
+if not hasattr(st, "experimental_rerun"):
+    st.experimental_rerun = st.rerun
+# ------------------------------------------------
+
 from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, RTCConfiguration
 import cv2
 import numpy as np
@@ -16,7 +21,6 @@ from google.oauth2.service_account import Credentials
 from datetime import datetime
 
 # --- CONFIGURATION ---
-# (Note: In a real app, keep these secret! But for your test, this works)
 TWILIO_SID = 'AC14911ac5ee7380049fc38986c318f829'
 TWILIO_TOKEN = 'ba415a1d96f3140cd7dea2b22623ab75'
 TWILIO_FROM = 'whatsapp:+14155238886'
@@ -32,8 +36,7 @@ st.title("📷 Live Event Scanner")
 def init_services():
     """
     Establish connections. 
-    Returns (sheet_object, twilio_object).
-    Strictly NO UI code (st.write, st.error) allowed here to prevent cache errors.
+    Strictly NO UI code (st.write, st.error) allowed here.
     """
     sheet_obj = None
     twilio_obj = None
@@ -46,11 +49,8 @@ def init_services():
         ]
         creds = None
         
-        # Strategy A: Local file
         if os.path.exists(CREDENTIALS_FILE):
             creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scope)
-        
-        # Strategy B: Streamlit Cloud Secrets (Base64)
         elif "GOOGLE_CREDENTIALS_BASE64" in st.secrets:
             try:
                 b64_str = st.secrets["GOOGLE_CREDENTIALS_BASE64"]
@@ -58,7 +58,7 @@ def init_services():
                 key_dict = json.loads(json_str)
                 creds = Credentials.from_service_account_info(key_dict, scopes=scope)
             except Exception as e:
-                print(f"Base64 Decode Error: {e}")
+                print(f"Base64 Error: {e}")
             
         if creds:
             g_client = gspread.authorize(creds)
@@ -69,7 +69,6 @@ def init_services():
 
     # 2. CONNECT TWILIO
     try:
-        # Check if secrets exist, otherwise use the variables at top
         sid = st.secrets.get("TWILIO_SID", TWILIO_SID)
         token = st.secrets.get("TWILIO_TOKEN", TWILIO_TOKEN)
         
@@ -82,20 +81,15 @@ def init_services():
     return sheet_obj, twilio_obj
 
 # --- MAIN EXECUTION ---
-# 1. Run the cached function
 sheet, twilio_client = init_services()
 
-# 2. Handle UI / Errors based on the result
 if sheet:
     st.toast("✅ Google Connected")
 else:
-    st.error("❌ Google Connection Failed. Check server logs or secrets.")
+    st.error("❌ Google Connection Failed.")
 
 if twilio_client:
     st.toast("✅ Twilio Connected")
-else:
-    st.warning("⚠️ Twilio not connected (SMS/WhatsApp disabled)")
-
 
 # --- THE SCANNER LOGIC ---
 result_queue = queue.Queue()
@@ -116,6 +110,7 @@ class QRProcessor(VideoTransformerBase):
                 cv2.polylines(img, [pts], True, (0, 255, 0), 4)
             
             current_time = time.time()
+            # COOLDOWN: Change 10 to 2 if you want to scan faster during testing
             if data not in self.scanned_codes or (current_time - self.last_scan_time > 10):
                 self.scanned_codes.add(data)
                 self.last_scan_time = current_time
@@ -136,10 +131,10 @@ webrtc_ctx = webrtc_streamer(
     video_transformer_factory=QRProcessor,
     rtc_configuration=rtc_configuration,
     media_stream_constraints={
-        "video": True, # Works on both Laptop and Mobile
+        "video": True, # Works on Laptop & Mobile
         "audio": False
     },
-    async_processing=True, # <--- ADD THIS! Helps prevent mobile crashes
+    async_processing=True, # Essential for mobile stability
 )
 
 # --- PROCESS RESULTS ---
@@ -149,7 +144,6 @@ if webrtc_ctx.state.playing:
         if scanned_data:
             st.success(f"Processing: {scanned_data}")
             
-            # Logic
             raw_text = scanned_data
             phone = re.sub(r'\D', '', raw_text)
             name = re.sub(r'[0-9,.-]', '', raw_text).strip()
